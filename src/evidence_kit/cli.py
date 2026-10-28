@@ -34,12 +34,54 @@ def _build(a: argparse.Namespace) -> int:
 def _parse(a: argparse.Namespace) -> int:
     from pathlib import Path as _P
     from .docx_catalog import read_catalog_docx
-    cat = read_catalog_docx(_P(a.docx))
+    src = _P(a.docx or a.image)
+    if src.suffix.lower() in {".png", ".jpg", ".jpeg", ".heic", ".heif", ".tif", ".tiff"}:
+        from .table import catalog_from_image
+        cat, warns, rows = catalog_from_image(src)
+        for w in warns:
+            print(f"  ! {w}")
+    else:
+        cat = read_catalog_docx(src)
     dump_yaml(cat, _P(a.out))
     print(f"读到 {len(cat.groups)} 组 / {sum(len(g.rows) for g in cat.groups)} 行 → {a.out}")
     for g in cat.groups:
         print(f"  证据{g.no_label:>6}  {' / '.join(r.name for r in g.rows)}"
               f"  证明目的 {len(g.proves)} 字")
+    return 0
+
+
+def _ocr(a: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path as _P
+    from . import ocr as ocr_mod
+    from .match import is_junk
+    mat = _P(a.materials)
+    files = [f for f in sorted(mat.iterdir()) if f.is_file() and not is_junk(f.name)]
+    index: dict[str, dict] = {}
+    for f in files:
+        ext = f.suffix.lower()
+        try:
+            if ext == ".pdf":
+                pages = ocr_mod.ocr_pdf_pages(f, max_pages=a.max_pages)
+                index[f.name] = {"pages": pages,
+                                 "chars": sum(len(p["text"]) for p in pages),
+                                 "ocr_pages": sum(1 for p in pages if p["source"] == "ocr")}
+            elif ext in {".png", ".jpg", ".jpeg", ".heic", ".heif", ".tif", ".tiff"}:
+                _w, _h, lines = ocr_mod.ocr_image(f)
+                text = "\n".join(l.text for l in sorted(lines, key=lambda l: (round(l.cy / 8), l.x)))
+                index[f.name] = {"pages": [{"page": 1, "source": "ocr", "text": text,
+                                            "lines": [{"t": l.text, "c": round(l.confidence, 3)}
+                                                      for l in lines]}],
+                                 "chars": len(text), "ocr_pages": 1}
+            else:
+                index[f.name] = {"pages": [], "chars": 0, "ocr_pages": 0}
+        except Exception as e:                                   # noqa: BLE001
+            index[f.name] = {"pages": [], "chars": 0, "ocr_pages": 0, "error": str(e)}
+        print(f"  {f.name}: {index[f.name].get('chars', 0)} 字"
+              f"{'（OCR）' if index[f.name].get('ocr_pages') else ''}")
+    _P(a.out).write_text(json.dumps(index, ensure_ascii=False, indent=1)[:0] or
+                         json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    print(f"文字索引：{a.out}")
     return 0
 
 
@@ -90,10 +132,17 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--no-flat", action="store_true", help="不做平铺自动归位（材料已按子目录分好时用）")
     b.set_defaults(func=_build)
 
-    pz = sub.add_parser("parse", help="读 Word 版《证据目录》→ yaml 草稿（序号/名称/证明目的照抄）")
-    pz.add_argument("--docx", required=True)
+    pz = sub.add_parser("parse", help="读《证据目录》（Word 或 拍照/截图）→ yaml 草稿")
+    pz.add_argument("--docx", help="Word 版目录")
+    pz.add_argument("--image", help="拍照/截图版目录（本地 OCR 识别）")
     pz.add_argument("--out", required=True)
     pz.set_defaults(func=_parse)
+
+    oc = sub.add_parser("ocr", help="给材料建文字索引（扫描件逐页 OCR，本地，不联网）")
+    oc.add_argument("--materials", required=True)
+    oc.add_argument("--out", required=True)
+    oc.add_argument("--max-pages", type=int, default=None, help="每份 PDF 最多识别几页（试跑用）")
+    oc.set_defaults(func=_ocr)
 
     m = sub.add_parser("match", help="预览：平铺材料会被归到哪一项证据（不排版，只出对照）")
     m.add_argument("--catalog", required=True)
