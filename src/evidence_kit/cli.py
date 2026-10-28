@@ -16,7 +16,8 @@ def _build(a: argparse.Namespace) -> int:
                              per_page=a.per_page, auto=a.auto,
                              allow_low_dpi=a.allow_low_dpi,
                              flat_match=not a.no_flat,
-                             sort_time=not a.no_sort, font=a.font)
+                             sort_time=not a.no_sort, font=a.font,
+                             use_llm=a.llm, llm_base=a.llm_base_url, llm_model=a.llm_model)
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -35,12 +36,16 @@ def _build(a: argparse.Namespace) -> int:
 def _parse(a: argparse.Namespace) -> int:
     from pathlib import Path as _P
     from .docx_catalog import read_catalog_docx
-    src = _P(a.docx or a.image)
-    if src.suffix.lower() in {".png", ".jpg", ".jpeg", ".heic", ".heif", ".tif", ".tiff"}:
-        from .table import catalog_from_image
-        cat, warns, rows = catalog_from_image(src)
+    if a.image:
+        from .table import catalog_from_image, catalog_from_images
+        imgs = [_P(x) for x in a.image]
+        cat, warns, rows = (catalog_from_image(imgs[0]) if len(imgs) == 1
+                            else catalog_from_images(imgs))
         for w in warns:
             print(f"  ! {w}")
+        src = imgs[0]
+    else:
+        src = _P(a.docx)
     else:
         cat = read_catalog_docx(src)
     dump_yaml(cat, _P(a.out))
@@ -133,11 +138,14 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--no-flat", action="store_true", help="不做平铺自动归位（材料已按子目录分好时用）")
     b.add_argument("--no-sort", action="store_true", help="组内不按时间重排（保持文件顺序）")
     b.add_argument("--font", help="指定中文字体文件（.ttf/.ttc），默认按仿宋→宋体查找")
+    b.add_argument("--llm", action="store_true", help="允许用 LLM 补写空白证明目的（需 DEEPSEEK_API_KEY，一次批量调用）")
+    b.add_argument("--llm-base-url", help="OpenAI 兼容端点（换本地模型只改这里）")
+    b.add_argument("--llm-model", help="模型名，默认 deepseek-flash")
     b.set_defaults(func=_build)
 
     pz = sub.add_parser("parse", help="读《证据目录》（Word 或 拍照/截图）→ yaml 草稿")
     pz.add_argument("--docx", help="Word 版目录")
-    pz.add_argument("--image", help="拍照/截图版目录（本地 OCR 识别）")
+    pz.add_argument("--image", nargs="+", help="拍照/截图版目录（可多张，跨页目录按序号拼接）")
     pz.add_argument("--out", required=True)
     pz.set_defaults(func=_parse)
 

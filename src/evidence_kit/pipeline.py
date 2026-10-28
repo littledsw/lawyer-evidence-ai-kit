@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import layout as L
-from . import match, render, sorting, sources
+from . import llm, match, render, sorting, sources
 from .match import is_junk
 from .catalog import load_catalog
 from .model import Catalog, natural_key
@@ -32,6 +32,50 @@ class BuildResult:
     review: list[str] = field(default_factory=list)
     match_notes: list[str] = field(default_factory=list)
     sort_tables: dict[str, list[dict]] = field(default_factory=dict)
+
+
+def _excerpt(group, limit: int = 240) -> str:
+    """取该组第一份材料的文字摘要（图片用已缓存的 OCR，PDF 只用文字层，绝不为此额外烧 OCR）。"""
+    for u in group.units:
+        text = _ocr_cache.get(str(u.path), "")
+        if text:
+            return text[:limit]
+        if u.kind == "pdf":
+            try:
+                from pypdf import PdfReader
+                t = (PdfReader(str(u.path)).pages[u.page].extract_text() or "").strip()
+                if t:
+                    return t[:limit]
+            except Exception:                                    # noqa: BLE001
+                continue
+    return ""
+
+
+def _llm_fill_proves(catalog: Catalog, res: "BuildResult", cfg) -> None:
+    items = []
+    for g in catalog.groups:
+        if g.proves.strip():
+            continue
+        items.append({"no": g.rows[0].no,
+                      "name": " / ".join(r.name for r in g.rows),
+                      "excerpt": _excerpt(g)})
+    if not items:
+        return
+    try:
+        sugg = llm.suggest_proves(items, cfg)
+    except Exception as e:                                       # noqa: BLE001
+        res.warnings.append(f"LLM 补写失败，已跳过：{e}")
+        return
+    for g in catalog.groups:
+        if g.proves.strip():
+            continue
+        got = sugg.get(g.rows[0].no)
+        if got:
+            g.proves = got
+            g.proves_source = "auto"
+            res.review.append(f"证据{g.no_label}：证明目的是 LLM 补的草稿，须人工确认 —— {got}")
+    if not sugg:
+        res.warnings.append("LLM 没给出可用的证明目的（材料摘要不足），保持空白")
 
 
 def _flat_match(catalog: Catalog, materials: Path, res: "BuildResult") -> list[str]:
@@ -84,7 +128,8 @@ def build(catalog_path: Path | None, materials: Path, out_dir: Path,
           compact: bool = False, per_page: int | None = None,
           auto: bool = False, allow_low_dpi: bool = False,
           flat_match: bool = True, sort_time: bool = True,
-          font: str | None = None) -> BuildResult:
+          font: str | None = None, use_llm: bool = False,
+          llm_base: str | None = None, llm_model: str | None = None) -> BuildResult:
     materials = Path(materials)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -116,6 +161,15 @@ def build(catalog_path: Path | None, materials: Path, out_dir: Path,
             res.warnings.extend(pr.warnings)
             for p, why in pr.skipped:
                 res.errors.append(f"证据{g.no_label} {p.name}：{why}（未纳入，不会静默丢弃）")
+
+    # ①.8 LLM 兜底（默认关闭）：只补「证明目的空着的」，一次批量调用，结果进待确认
+    if use_llm:
+        cfg = llm.LLMConfig(base_url=llm_base or llm.DEFAULT_BASE,
+                            model=llm_model or llm.DEFAULT_MODEL)
+        if cfg.ready:
+            _llm_fill_proves(catalog, res, cfg)
+        else:
+            res.review.append(f"要求 LLM 补写，但环境变量 {cfg.api_key_env} 未设置，已跳过")
 
     # ② 分页 —— 目录里的页数只能从这里出
     res.plan = L.plan(catalog.groups, per_page=n_per)

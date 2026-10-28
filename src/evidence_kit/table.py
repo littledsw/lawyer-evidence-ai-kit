@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .ocr import OcrLine
 
@@ -190,7 +191,7 @@ def _split_by_bounds(line: OcrLine, bounds: list[float]) -> list[OcrLine]:
     return out or [line]
 
 
-def reconstruct(lines: list[OcrLine]) -> tuple[list[OcrRow], dict, list[str]]:
+def reconstruct(lines: list[OcrLine], bounds_hint=None) -> tuple[list[OcrRow], dict, list[str]]:
     """返回（行列表, 落款字典, 警告）。"""
     warn: list[str] = []
     if not lines:
@@ -231,7 +232,8 @@ def reconstruct(lines: list[OcrLine]) -> tuple[list[OcrRow], dict, list[str]]:
     keys = ["no", "name", "proves"]
     fallback = [(l1.right + l2.x) / 2 for (_k1, l1), (_k2, l2) in zip(cols, cols[1:])
                 if _k1 == "no" or _k1 == "name"]
-    bounds = _column_bounds(below, fallback)
+    bounds = _column_bounds(below, fallback) or (bounds_hint or [])
+    reconstruct._last_bounds = bounds
     if not bounds:
         warn.append("列边界没定出来（材料里可能只有一列文字），整行按一列处理")
     missing = set(HEADER_WORDS) - set(keys)
@@ -417,13 +419,87 @@ def to_catalog(rows: list[OcrRow], case: dict, source: str):
     return Catalog(case=ci, groups=groups, source=source)
 
 
-def catalog_from_image(path) -> tuple:
-    """图片 → (Catalog, 警告, 行)。"""
-    from . import ocr
+def _rows_from(path, bounds_hint=None):
+    """OCR + 重建。识别不出表格时，若歪斜明显就先矫正再重试一次。"""
+    from . import ocr, preprocess
 
     _w, _h, lines = ocr.ocr_image(path, with_chars=True)
-    rows, case, warn = reconstruct(lines)
+    try:
+        return reconstruct(lines, bounds_hint=bounds_hint), 0.0
+    except ValueError:
+        angle = preprocess.estimate_angle(Path(path))
+        if abs(angle) < preprocess.MIN_ANGLE:
+            raise
+        fixed, _a = preprocess.deskew(Path(path))
+        _w, _h, lines = ocr.ocr_image(fixed, with_chars=True)
+        return reconstruct(lines, bounds_hint=bounds_hint), angle
+
+
+def catalog_from_image(path, deskew: bool = True) -> tuple:
+    """单张图片 → (Catalog, 警告, 行)。
+
+    歪斜策略（实测得出）：**先直接识别**；识别不出来再看歪斜角度、超过 2.5° 才校正重试。
+    小角度（≤2°）校正会因插值损失反而降低准确率，所以不做。
+    """
+    from . import preprocess
+
+    angle = 0.0
+    if deskew:
+        a = preprocess.estimate_angle(Path(path))
+        if abs(a) >= preprocess.OCR_MIN_ANGLE:
+            use, angle = preprocess.deskew(Path(path))
+        else:
+            use = Path(path)
+    else:
+        use = Path(path)
+    (rows, case, warn), retry_angle = _rows_from(use)
+    if retry_angle:
+        angle = angle or retry_angle
+        warn.append(f"直接识别失败，图片歪斜 {retry_angle:+.1f}°，已矫正后重试成功")
+    if angle and abs(angle) >= preprocess.MIN_ANGLE:
+        warn.append(f"图片歪斜 {angle:+.1f}°，已自动矫正后再识别")
     low = [r for r in rows if r.conf and min(r.conf) < 0.5]
     if low:
         warn.append("低置信度行（务必人工核对）：" + "、".join(str(r.no or "?") for r in low))
     return to_catalog(rows, case, str(path)), warn, rows
+
+
+def catalog_from_images(paths, deskew: bool = True) -> tuple:
+    """多张图片 = 一份跨页目录：逐页识别后按序号拼接成一整张表。
+
+    跨页时第 2 页往往重复表头、或者干脆没有表头——没有表头的页沿用上一页的列边界，
+    序号继续往下接；证明目的空白仍然按「合并续行」处理。
+    """
+    from . import ocr, preprocess
+
+    all_rows: list[OcrRow] = []
+    case: dict = {}
+    warn: list[str] = []
+    bounds_hint = None
+    for i, p in enumerate(paths, start=1):
+        use = Path(p)
+        angle = 0.0
+        if deskew:
+            use, angle = preprocess.deskew(Path(p))
+        if angle and abs(angle) >= preprocess.MIN_ANGLE:
+            warn.append(f"第 {i} 页歪斜 {angle:+.1f}°，已自动矫正")
+        _w, _h, lines = ocr.ocr_image(use, with_chars=True)
+        try:
+            rows, cs, w2 = reconstruct(lines, bounds_hint=bounds_hint)
+        except ValueError as e:
+            if "表头" in str(e) and i > 1:
+                warn.append(f"第 {i} 页没找到表头，且无法沿用上一页的列边界 —— 该页跳过")
+                continue
+            raise
+        bounds_hint = getattr(reconstruct, "_last_bounds", None)
+        warn.extend(f"第 {i} 页：{x}" for x in w2)
+        all_rows.extend(rows)
+        case = case or cs
+        if i > 1 and rows and all_rows and rows[0].no and all_rows[0].no:
+            warn.append(f"第 {i} 页序号从 {rows[0].no} 开始，已与前一页拼接")
+    if not all_rows:
+        raise ValueError("这些图片里都没识别出证据行")
+    low = [r for r in all_rows if r.conf and min(r.conf) < 0.5]
+    if low:
+        warn.append("低置信度行（务必人工核对）：" + "、".join(str(r.no or "?") for r in low))
+    return to_catalog(all_rows, case, " + ".join(str(p) for p in paths)), warn, all_rows

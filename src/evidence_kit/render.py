@@ -43,9 +43,10 @@ _FANGSONG_HINTS = ("仿宋", "fangsong", "stfangsong", "FangSong_GB2312")
 _SONGTI_HINTS = ("Songti", "songti", "STS", "STSong")
 
 
-def _find_font(hints) -> str | None:
-    """按名称在系统/用户字体目录里找字体文件（.ttf/.ttc）。"""
+def _find_fonts(hints) -> list[str]:
+    """按名称在系统/用户字体目录里找字体文件（.ttf/.ttc/.otf），保持目录顺序。"""
     import os
+    found: list[str] = []
     for d in _FONT_DIRS:
         root = Path(os.path.expanduser(d))
         if not root.exists():
@@ -54,8 +55,17 @@ def _find_font(hints) -> str | None:
             if f.suffix.lower() not in {".ttf", ".ttc", ".otf"}:
                 continue
             if any(h.lower() in f.name.lower() for h in hints):
-                return str(f)
-    return None
+                found.append(str(f))
+    return found
+
+
+def _find_font(hints) -> str | None:
+    hits = _find_fonts(hints)
+    if not hits:
+        return None
+    regular = [p for p in hits if not any(k in Path(p).stem.lower()
+                                          for k in ("bold", "demi", "black", "heavy"))]
+    return regular[0] if regular else hits[0]
 
 
 def _register(family: str, path: str, font_index: int | None = None) -> bool:
@@ -86,32 +96,74 @@ _fonts_ready = False
 
 
 def ensure_fonts(override: str | None = None) -> None:
-    """字体优先级：用户指定 → 仿宋 → 宋体 → 黑体。实际用了哪个写进 FONT_USED，报告里点名。"""
+    """字体优先级：用户指定 → 仿宋 → 宋体 → 黑体。
+
+    同一家族里把非粗体文件当正文、粗体文件当标题（没有粗体就共用同一个文件）。
+    实际用了哪个写进 `FONT_USED`，报告里点名，避免「以为用的是仿宋其实不是」。
+    """
     global _fonts_ready
     if _fonts_ready:
         return
-    cands: list[tuple[str, str]] = []
+
+    def pick(label: str, hints) -> bool:
+        hits = [override] if (override and label == "指定") else _find_fonts(hints)
+        if not hits:
+            return False
+        regular = [p for p in hits if not any(k in Path(p).stem.lower()
+                                              for k in ("bold", "demi", "black", "heavy"))]
+        bold = [p for p in hits if any(k in Path(p).stem.lower()
+                                       for k in ("bold", "demi"))]
+        body_src = regular[0] if regular else hits[0]
+        bold_src = bold[0] if bold else body_src
+        if not _register(FONT_BODY, body_src):
+            return False
+        _register(FONT_BOLD, bold_src)
+        FONT_USED.update(body=label, file=body_src,
+                         note="" if label == "仿宋" else
+                         f"本机未装仿宋，版式按采样值输出、字形用{label}近似")
+        return True
+
+    steps = []
     if override:
-        cands.append(("指定", override))
-    fang = _find_font(_FANGSONG_HINTS)
-    if fang:
-        cands.append(("仿宋", fang))
-    song = _find_font(_SONGTI_HINTS)
-    if song:
-        cands.append(("宋体", song))
-    for label, path in cands:
-        if _register(FONT_BODY, path):
-            _register(FONT_BOLD, path)
-            FONT_USED.update(body=label, file=path,
-                             note="" if label == "仿宋" else
-                             f"本机未装仿宋，版式按采样值输出、字形用{label}近似")
+        steps.append(("指定", ()))
+    steps += [("仿宋", _FANGSONG_HINTS), ("宋体", _SONGTI_HINTS), ("黑体", ("STHeiti", "heiti"))]
+    for label, hints in steps:
+        if pick(label, hints):
             _fonts_ready = True
             return
     raise RuntimeError("找不到可用中文字体；用 --font 指定一个 .ttf/.ttc")
 
 
 # ---------------------------------------------------------------- 目录页
+# 缺字替换：CJK 字库常缺 ASCII 连字符（实测 InsomniaFangSong 没有 U+002D，
+# 页码区间「1-22」会印成豆腐块）。按字体实际 cmap 判断，缺了就换等价字符。
+_GLYPH_FALLBACK = {"-": "\u2011", "\u2011": "\u2013", "~": "\uff5e"}
+_missing_seen: set[str] = set()
+
+
+def fix_glyphs(text: str, font: str) -> str:
+    """把当前字体没有的字形换成等价字符；无从替换就保留，并把缺字记进报告。"""
+    try:
+        c2g = pdfmetrics.getFont(font).face.charToGlyph
+    except Exception:                                            # noqa: BLE001
+        return text
+    out = []
+    for ch in text:
+        if ch in " \n\t" or ord(ch) in c2g:
+            out.append(ch)
+            continue
+        alt = _GLYPH_FALLBACK.get(ch)
+        _missing_seen.add(f"{ch}→{alt or '无替代'}")
+        out.append(alt or ch)
+    return "".join(out)
+
+
+def missing_glyphs() -> list[str]:
+    return sorted(_missing_seen)
+
+
 def _para(text: str, font: str, size: float, align=None, leading=None) -> Paragraph:
+    text = fix_glyphs(text, font)
     st = ParagraphStyle("x", fontName=font, fontSize=size,
                         leading=leading or size * 1.55, alignment=align or 0,
                         wordWrap="CJK")      # 中文按字断行（否则标点会掉到行首）
@@ -404,11 +456,12 @@ class _SignBlock(Flowable):
         self.canv.setFont(FONT_BODY, SAMPLE["body_pt"])
         self.canv.setFillGray(0)
         top = self.height - 4 * L.MM
-        self.canv.drawString(0, top, f"提交人：{c.submitter}")
-        self.canv.drawString(0, top - self.LINE, f"代理人：{c.agent}")
+        self.canv.drawString(0, top, fix_glyphs(f"提交人：{c.submitter}", FONT_BODY))
+        self.canv.drawString(0, top - self.LINE, fix_glyphs(f"代理人：{c.agent}", FONT_BODY))
         y = top - 2 * self.LINE
-        self.canv.drawString(0, y, "提交日期：")
-        x0 = self.canv.stringWidth("提交日期：", FONT_BODY, SAMPLE["body_pt"]) + 2 * L.MM
+        self.canv.drawString(0, y, fix_glyphs("提交日期：", FONT_BODY))
+        x0 = self.canv.stringWidth(fix_glyphs("提交日期：", FONT_BODY), FONT_BODY,
+                                   SAMPLE["body_pt"]) + 2 * L.MM
         if c.date:
             self.canv.drawString(x0, y, c.date)
             return
