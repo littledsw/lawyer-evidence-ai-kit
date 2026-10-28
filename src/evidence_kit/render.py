@@ -19,6 +19,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus.flowables import Flowable
 
 from . import layout as L
 from .model import Catalog, Group
@@ -122,15 +123,7 @@ def catalog_pdf(path: Path, catalog: Catalog) -> int:
     story.append(t)
     story.append(Spacer(1, 10 * L.MM))
 
-    c = catalog.case
-    date_line = c.date if c.date else ("年" + "\u00a0" * 6 + "月" + "\u00a0" * 6 + "日")
-    story += [
-        _para(f"提交人：{_txt(c.submitter)}", FONT_BODY, 12.5),
-        Spacer(1, 3 * L.MM),
-        _para(f"代理人：{_txt(c.agent)}", FONT_BODY, 12.5),
-        Spacer(1, 3 * L.MM),
-        _para(f"提交日期：{_txt(date_line)}", FONT_BODY, 12.5),
-    ]
+    story.append(_SignBlock(catalog.case))
     doc.build(story)
     from pypdf import PdfReader
     return len(PdfReader(str(path)).pages)
@@ -220,6 +213,38 @@ def evidence_pdf(path: Path, plan: L.Plan, catalog: Catalog) -> list[tuple[int, 
     writer.write(buf)
     Path(path).write_bytes(buf.getvalue())
     return labels
+
+
+class _SignBlock(Flowable):
+    """落款三行。日期留空时按固定间距画「年　月　日」—— Paragraph 会折叠空白，只能在这里画。"""
+
+    LINE = 9 * L.MM
+    GAP = 20 * L.MM          # 「年」「月」「日」之间的填空宽度
+
+    def __init__(self, case):
+        super().__init__()
+        self.case = case
+
+    def wrap(self, avail_width, avail_height):
+        self.width = avail_width
+        self.height = 2 * self.LINE + 6 * L.MM
+        return self.width, self.height
+
+    def draw(self):
+        c = self.case
+        self.canv.setFont(FONT_BODY, 12.5)
+        self.canv.setFillGray(0)
+        top = self.height - 4 * L.MM
+        self.canv.drawString(0, top, f"提交人：{c.submitter}")
+        self.canv.drawString(0, top - self.LINE, f"代理人：{c.agent}")
+        y = top - 2 * self.LINE
+        self.canv.drawString(0, y, "提交日期：")
+        x0 = self.canv.stringWidth("提交日期：", FONT_BODY, 12.5) + 2 * L.MM
+        if c.date:
+            self.canv.drawString(x0, y, c.date)
+            return
+        for i, ch in enumerate("年月日"):
+            self.canv.drawString(x0 + i * self.GAP, y, ch)
 
 
 def merge(paths: list[Path], out: Path) -> None:
