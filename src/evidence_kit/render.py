@@ -130,6 +130,58 @@ def catalog_pdf(path: Path, catalog: Catalog) -> int:
     return len(PdfReader(str(path)).pages)
 
 
+# ---------------------------------------------------------------- PDF 页变换
+def _mm(A, B):
+    a, b, c, d, e, f = A
+    A2, B2, C2, D2, E2, F2 = B
+    return (a * A2 + c * B2, b * A2 + d * B2,
+            a * C2 + c * D2, b * C2 + d * D2,
+            a * E2 + c * F2 + e, b * E2 + d * F2 + f)
+
+
+def _apply(M, x, y):
+    a, b, c, d, e, f = M
+    return (a * x + c * y + e, b * x + d * y + f)
+
+
+def _rot(theta_deg: float):
+    import math
+    t = math.radians(theta_deg)
+    cs, sn = math.cos(t), math.sin(t)
+    return (cs, sn, -sn, cs, 0.0, 0.0)
+
+
+def pdf_page_ctm(page, cell_w: float, cell_h: float, tx: float, ty: float):
+    """源 PDF 页 → 目标单元格的变换矩阵。
+
+    必须处理 `/Rotate`：扫描仪常把 A4 竖页存成「内容横躺 + /Rotate 270」，
+    pypdf 合并时**不会**自动应用它——不处理就会印出侧躺的一页（实测社保记录就是）。
+    """
+    mb = page.mediabox
+    W, H = float(mb.width), float(mb.height)
+    rot = int(getattr(page, "rotation", 0) or 0) % 360
+    cx, cy = (float(mb.left) + float(mb.right)) / 2, (float(mb.bottom) + float(mb.top)) / 2
+
+    M = (1, 0, 0, 1, -cx, -cy)
+    M = _mm(_rot(-rot), M)                 # 绕页面中心把内容摆正
+    M = _mm((1, 0, 0, 1, cx, cy), M)
+
+    corners = [_apply(M, x, y) for x, y in
+               ((float(mb.left), float(mb.bottom)), (float(mb.right), float(mb.bottom)),
+                (float(mb.left), float(mb.top)), (float(mb.right), float(mb.top)))]
+    xs = [c[0] for c in corners]
+    ys = [c[1] for c in corners]
+    x0, y0 = min(xs), min(ys)
+    vis_w, vis_h = max(xs) - x0, max(ys) - y0
+    s = min(cell_w / vis_w, cell_h / vis_h)
+
+    M = _mm((1, 0, 0, 1, -x0, -y0), M)
+    M = _mm((s, 0, 0, s, 0, 0), M)
+    ox = tx + (cell_w - vis_w * s) / 2
+    oy = ty + (cell_h - vis_h * s) / 2
+    return _mm((1, 0, 0, 1, ox, oy), M)
+
+
 # ---------------------------------------------------------------- 证据页
 def _draw_image_unit(c: canvas.Canvas, unit, cell_w: float, cell_h: float) -> None:
     """在**已平移到单元格原点**的画布上画图；单元格内居中，越界部分由裁剪窗裁掉。"""
@@ -197,15 +249,9 @@ def evidence_pdf(path: Path, plan: L.Plan, catalog: Catalog) -> list[tuple[int, 
             if unit.kind != "pdf":
                 continue
             src = PdfReader(str(unit.path)).pages[unit.page]
-            s = min(cell_w / unit.width_px, page.cell_h / unit.height_px)
-            dw, dh = unit.width_px * s, unit.height_px * s
             cx, cy = L.cell_origin(idx, n)
-            tx = cx + (cell_w - dw) / 2
-            ty = cy + (page.cell_h - dh) / 2
-            mb = src.mediabox
-            t = Transformation().translate(tx - s * float(mb.left),
-                                          ty - s * float(mb.bottom)).scale(s)
-            out.merge_transformed_page(src, t)
+            ctm = pdf_page_ctm(src, cell_w, page.cell_h, cx, cy)
+            out.merge_transformed_page(src, Transformation(ctm=ctm))
         out.merge_page(PdfReader(io.BytesIO(_footer_page(no, label))).pages[0])
         writer.add_page(out)
         labels.append((no, label))

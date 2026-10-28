@@ -122,3 +122,27 @@ def test_long_screenshot_is_sliced_with_overlap(tmp_path, mk_jpeg):
     assert u.slice_y1_px == u.height_px
     last = res.catalog.groups[0].units[-1]
     assert last.slice_y1_px == 9000
+
+
+def test_pdf_page_rotation_is_applied():
+    """扫描件常见「竖页 + /Rotate 270」：必须摆正，且结果仍落在单元格内。"""
+    from types import SimpleNamespace
+    from pypdf.generic import RectangleObject
+    from evidence_kit.render import _apply, pdf_page_ctm
+
+    cell_w, cell_h = 400.0, 560.0
+    for rot in (0, 90, 180, 270):
+        page = SimpleNamespace(mediabox=RectangleObject([0, 0, 595.0, 842.0]), rotation=rot)
+        M = pdf_page_ctm(page, cell_w, cell_h, 0.0, 0.0)
+        pts = [(0, 0), (595, 0), (0, 842), (595, 842)]
+        out = [_apply(M, x, y) for x, y in pts]
+        xs = [p[0] for p in out]
+        ys = [p[1] for p in out]
+        assert min(xs) >= -1 and max(xs) <= cell_w + 1, (rot, min(xs), max(xs))
+        assert min(ys) >= -1 and max(ys) <= cell_h + 1, (rot, min(ys), max(ys))
+        # 90/270 时内容被摆正，宽高应互换：横向铺满（595 的那条边贴到 cell_w）
+        span_w, span_h = max(xs) - min(xs), max(ys) - min(ys)
+        if rot in (90, 270):
+            assert span_w == pytest.approx(cell_w, abs=1), (rot, span_w)
+        else:
+            assert span_h == pytest.approx(cell_h, abs=1), (rot, span_h)
