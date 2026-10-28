@@ -203,7 +203,7 @@ def _files_compact(units) -> str:
                and units[j + 1].slice_index == 0 and units[j].slice_count == 1):
             j += 1
         if j > i:
-            out.append(f"{u.label.split('（')[0]}（p{u.page + 1}–p{units[j].page + 1}）")
+            out.append(f"{u.path.name}（p{u.page + 1}–p{units[j].page + 1}）")
         else:
             out.append(u.label)
         i = j + 1

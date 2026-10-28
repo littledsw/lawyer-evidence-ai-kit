@@ -31,7 +31,8 @@ def _text(node) -> str:
         seg = "".join(t.text or "" for t in p.iter(f"{W}t"))
         if seg.strip():
             out.append(seg.strip())
-    return "\n".join(out) if out else "".join(t.text or "" for t in node.iter(f"{W}t")).strip()
+    text = "\n".join(out)
+    return re.sub(r"\n{2,}", "\n", text) if out else "".join(t.text or "" for t in node.iter(f"{W}t")).strip()
 
 
 def _cells(tr) -> list[tuple[str, int, str]]:
