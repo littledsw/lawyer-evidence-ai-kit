@@ -184,12 +184,12 @@ def wrap_cjk(text: str, width_pt: float, font: str, size: float) -> str:
     return "<br/>".join(out)
 
 
-def catalog_pdf(path: Path, catalog: Catalog) -> int:
+def catalog_pdf(path: Path, catalog: Catalog, font: str | None = None) -> int:
     """目录页：标题 + 四列表格（序号/名称/证明目的/页数）+ 落款。
 
     版式全部取自 `SAMPLE`（从真实卷宗 docx 采样）：页边距、字号、行距、列宽比、对齐方式。
     """
-    ensure_fonts()
+    ensure_fonts(font)
     side = SAMPLE["margin_lr_mm"] * L.MM
     tb = SAMPLE["margin_tb_mm"] * L.MM
     doc = SimpleDocTemplate(str(path), pagesize=L.A4,

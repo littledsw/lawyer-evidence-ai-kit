@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import layout as L
-from . import match, render, sources
+from . import match, render, sorting, sources
 from .match import is_junk
 from .catalog import load_catalog
 from .model import Catalog, natural_key
@@ -31,6 +31,7 @@ class BuildResult:
     errors: list[str] = field(default_factory=list)
     review: list[str] = field(default_factory=list)
     match_notes: list[str] = field(default_factory=list)
+    sort_tables: dict[str, list[dict]] = field(default_factory=dict)
 
 
 def _flat_match(catalog: Catalog, materials: Path, res: "BuildResult") -> list[str]:
@@ -51,10 +52,39 @@ def _flat_match(catalog: Catalog, materials: Path, res: "BuildResult") -> list[s
     return notes
 
 
+def _sort_units(units, row, res: "BuildResult"):
+    """一行证据内部按时间排序（微信截图这类）。行之间绝不互相排序。"""
+    from . import ocr as ocr_mod
+
+    imgs = [u for u in units if u.kind == "image" and u.slice_count == 1]
+    if len(imgs) < 2:
+        return units
+    texts: dict[int, str] = {}
+    for u in imgs:
+        key = str(u.path)
+        if key not in _ocr_cache:
+            try:
+                _w, _h, lines = ocr_mod.ocr_image(u.path)
+                _ocr_cache[key] = "\n".join(
+                    l.text for l in sorted(lines, key=lambda l: (round(l.cy / 8), l.x)))
+            except Exception:                                     # noqa: BLE001
+                _ocr_cache[key] = ""
+        texts[id(u)] = _ocr_cache[key]
+    new, rows = sorting.order(units, texts)
+    res.sort_tables[f"证据{row.no}"] = rows
+    if new != units:
+        res.warnings.append(f"证据{row.no}：组内按时间重排 {len(imgs)} 张")
+    return new
+
+
+_ocr_cache: dict[str, str] = {}
+
+
 def build(catalog_path: Path | None, materials: Path, out_dir: Path,
           compact: bool = False, per_page: int | None = None,
           auto: bool = False, allow_low_dpi: bool = False,
-          flat_match: bool = True) -> BuildResult:
+          flat_match: bool = True, sort_time: bool = True,
+          font: str | None = None) -> BuildResult:
     materials = Path(materials)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -80,6 +110,8 @@ def build(catalog_path: Path | None, materials: Path, out_dir: Path,
                 res.errors.append(f"证据{g.no_label}「{row.name}」：没有匹配到任何文件")
                 continue
             pr = sources.probe(files)
+            if sort_time:
+                pr.units = _sort_units(pr.units, row, res)
             g.units.extend(pr.units)
             res.warnings.extend(pr.warnings)
             for p, why in pr.skipped:
@@ -124,7 +156,7 @@ def build(catalog_path: Path | None, materials: Path, out_dir: Path,
         raise RuntimeError("出册前检查未通过：\n- " + "\n- ".join(res.errors))
 
     # ⑥ 渲染
-    res.catalog_pages = render.catalog_pdf(res.catalog_pdf, catalog)
+    res.catalog_pages = render.catalog_pdf(res.catalog_pdf, catalog, font=font)
     render.evidence_pdf(res.evidence_pdf, res.plan, catalog)
     from pypdf import PdfReader
     res.evidence_pages = len(PdfReader(str(res.evidence_pdf)).pages)
@@ -183,6 +215,13 @@ def _write_report(res: BuildResult) -> None:
     for g in cat.groups:
         files = _files_compact(g.units) or "—"
         lines.append(f"| {g.no_label} | {' / '.join(r.name for r in g.rows)} | {g.pages_label} | {files} |")
+    if res.sort_tables:
+        lines += ["", "## 组内排序核对表（排错了改这一行）", ""]
+        for no, rows in res.sort_tables.items():
+            lines.append(f"### {no}")
+            lines.append("")
+            lines += sorting.describe(rows)
+            lines.append("")
     if res.review:
         lines += ["", "## 需人工确认（机器未替你做的实体判断）", ""] + [f"- {x}" for x in res.review]
     if res.warnings:

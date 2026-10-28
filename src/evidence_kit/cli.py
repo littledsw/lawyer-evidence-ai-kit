@@ -15,7 +15,8 @@ def _build(a: argparse.Namespace) -> int:
                              out_dir=Path(a.out), compact=a.compact,
                              per_page=a.per_page, auto=a.auto,
                              allow_low_dpi=a.allow_low_dpi,
-                             flat_match=not a.no_flat)
+                             flat_match=not a.no_flat,
+                             sort_time=not a.no_sort, font=a.font)
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -130,6 +131,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--auto", action="store_true", help="忽略目录文件，按子目录自动分组")
     b.add_argument("--allow-low-dpi", action="store_true", help="允许 <100 DPI 的材料出册（会糊）")
     b.add_argument("--no-flat", action="store_true", help="不做平铺自动归位（材料已按子目录分好时用）")
+    b.add_argument("--no-sort", action="store_true", help="组内不按时间重排（保持文件顺序）")
+    b.add_argument("--font", help="指定中文字体文件（.ttf/.ttc），默认按仿宋→宋体查找")
     b.set_defaults(func=_build)
 
     pz = sub.add_parser("parse", help="读《证据目录》（Word 或 拍照/截图）→ yaml 草稿")
