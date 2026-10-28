@@ -454,9 +454,8 @@ def catalog_from_image(path, deskew: bool = True) -> tuple:
         use = Path(path)
     (rows, case, warn), retry_angle = _rows_from(use)
     if retry_angle:
-        angle = angle or retry_angle
-        warn.append(f"直接识别失败，图片歪斜 {retry_angle:+.1f}°，已矫正后重试成功")
-    if angle and abs(angle) >= preprocess.MIN_ANGLE:
+        warn.append(f"直接识别失败；检测到歪斜 {retry_angle:+.1f}°，矫正后重试成功")
+    elif angle and abs(angle) >= preprocess.MIN_ANGLE:
         warn.append(f"图片歪斜 {angle:+.1f}°，已自动矫正后再识别")
     low = [r for r in rows if r.conf and min(r.conf) < 0.5]
     if low:
