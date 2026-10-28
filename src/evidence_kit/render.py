@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import io
+import re
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -73,7 +74,7 @@ def _proves_html(text: str) -> str:
     t = _txt(text)
     if _NUM_ITEM.search(text):
         t = t.replace("；", "；<br/>")
-    return t
+    return re.sub(r"\s*<br/>\s*", "<br/>", t)      # 换行与 <br/> 叠在一起会多出空行
 
 
 def catalog_pdf(path: Path, catalog: Catalog) -> int:
