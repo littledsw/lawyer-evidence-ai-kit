@@ -17,7 +17,8 @@ def _build(a: argparse.Namespace) -> int:
                              allow_low_dpi=a.allow_low_dpi,
                              flat_match=not a.no_flat,
                              sort_time=not a.no_sort, font=a.font,
-                             use_llm=a.llm, llm_base=a.llm_base_url, llm_model=a.llm_model)
+                             use_llm=a.llm, llm_base=a.llm_base_url, llm_model=a.llm_model,
+                             docx=not a.no_docx)
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -46,7 +47,6 @@ def _parse(a: argparse.Namespace) -> int:
         src = imgs[0]
     else:
         src = _P(a.docx)
-    else:
         cat = read_catalog_docx(src)
     dump_yaml(cat, _P(a.out))
     print(f"读到 {len(cat.groups)} 组 / {sum(len(g.rows) for g in cat.groups)} 行 → {a.out}")
@@ -138,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--no-flat", action="store_true", help="不做平铺自动归位（材料已按子目录分好时用）")
     b.add_argument("--no-sort", action="store_true", help="组内不按时间重排（保持文件顺序）")
     b.add_argument("--font", help="指定中文字体文件（.ttf/.ttc），默认按仿宋→宋体查找")
+    b.add_argument("--no-docx", action="store_true", help="不导出 Word 版目录")
     b.add_argument("--llm", action="store_true", help="允许用 LLM 补写空白证明目的（需 DEEPSEEK_API_KEY，一次批量调用）")
     b.add_argument("--llm-base-url", help="OpenAI 兼容端点（换本地模型只改这里）")
     b.add_argument("--llm-model", help="模型名，默认 deepseek-flash")

@@ -21,6 +21,7 @@ class BuildResult:
     book: Path
     catalog_pdf: Path
     evidence_pdf: Path
+    catalog_docx: Path
     report_json: Path
     report_md: Path
     catalog: Catalog
@@ -129,7 +130,8 @@ def build(catalog_path: Path | None, materials: Path, out_dir: Path,
           auto: bool = False, allow_low_dpi: bool = False,
           flat_match: bool = True, sort_time: bool = True,
           font: str | None = None, use_llm: bool = False,
-          llm_base: str | None = None, llm_model: str | None = None) -> BuildResult:
+          llm_base: str | None = None, llm_model: str | None = None,
+          docx: bool = True) -> BuildResult:
     materials = Path(materials)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -139,6 +141,7 @@ def build(catalog_path: Path | None, materials: Path, out_dir: Path,
     res = BuildResult(out_dir=out_dir, book=out_dir / "证据册.pdf",
                       catalog_pdf=out_dir / "证据目录.pdf",
                       evidence_pdf=out_dir / "证据页.pdf",
+                      catalog_docx=out_dir / "证据目录.docx",
                       report_json=out_dir / "report.json",
                       report_md=out_dir / "README-核对报告.md",
                       catalog=catalog, plan=L.Plan(per_page=n_per))
@@ -211,6 +214,12 @@ def build(catalog_path: Path | None, materials: Path, out_dir: Path,
 
     # ⑥ 渲染
     res.catalog_pages = render.catalog_pdf(res.catalog_pdf, catalog, font=font)
+    if docx:
+        try:
+            from .docx_writer import write_catalog_docx
+            write_catalog_docx(catalog, res.catalog_docx)
+        except Exception as e:                                   # noqa: BLE001
+            res.warnings.append(f"Word 版目录导出失败（不影响 PDF）：{e}")
     render.evidence_pdf(res.evidence_pdf, res.plan, catalog)
     from pypdf import PdfReader
     res.evidence_pages = len(PdfReader(str(res.evidence_pdf)).pages)
