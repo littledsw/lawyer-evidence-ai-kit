@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import layout as L
-from . import render, sources
+from . import match, render, sources
 from .catalog import load_catalog
-from .model import Catalog
+from .model import Catalog, natural_key
 
 DPI_WARN = 150.0
 DPI_FLOOR = 100.0
@@ -29,11 +29,27 @@ class BuildResult:
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     review: list[str] = field(default_factory=list)
+    match_notes: list[str] = field(default_factory=list)
+
+
+def _flat_match(catalog: Catalog, materials: Path, res: "BuildResult") -> list[str]:
+    """平铺目录里的散文件 → 归入空着的序号行。歧义与零分进待确认清单，不猜。"""
+    if not materials.is_dir():
+        return []
+    loose = sorted((f for f in materials.iterdir() if f.is_file()), key=natural_key)
+    if not loose:
+        return []
+    eligible = {id(r) for g in catalog.groups for r in g.rows if not r.files}
+    decisions = match.match(catalog, loose)
+    n, notes = match.apply(catalog, decisions, eligible=eligible)
+    res.warnings.append(f"平铺材料：{len(loose)} 个文件，自动归位 {n} 个")
+    return notes
 
 
 def build(catalog_path: Path | None, materials: Path, out_dir: Path,
           compact: bool = False, per_page: int | None = None,
-          auto: bool = False, allow_low_dpi: bool = False) -> BuildResult:
+          auto: bool = False, allow_low_dpi: bool = False,
+          flat_match: bool = True) -> BuildResult:
     materials = Path(materials)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -46,6 +62,10 @@ def build(catalog_path: Path | None, materials: Path, out_dir: Path,
                       report_json=out_dir / "report.json",
                       report_md=out_dir / "README-核对报告.md",
                       catalog=catalog, plan=L.Plan(per_page=n_per))
+
+    # ⓪ 平铺材料 → 证据组（文件名优先，OCR 只辅助；歧义交人工，不猜）
+    if flat_match:
+        res.match_notes = _flat_match(catalog, materials, res)
 
     # ① 材料 → 单元
     for g in catalog.groups:
@@ -81,7 +101,10 @@ def build(catalog_path: Path | None, materials: Path, out_dir: Path,
                 res.warnings.append(
                     f"证据{g.no_label} {u.label}：印到纸上 {dpi:.0f} DPI（<{DPI_WARN:.0f}），可读但偏糊")
 
-    # ④ 待复核清单：机器补的证明目的
+    # ④ 待复核清单：平铺匹配里没定案的文件
+    res.review.extend(res.match_notes)
+
+    # ⑤ 待复核清单：机器补的证明目的
     for g in catalog.groups:
         if g.proves_source != "user" or not g.proves.strip():
             res.review.append(
@@ -92,7 +115,7 @@ def build(catalog_path: Path | None, materials: Path, out_dir: Path,
         _write_report(res)
         raise RuntimeError("出册前检查未通过：\n- " + "\n- ".join(res.errors))
 
-    # ⑤ 渲染
+    # ⑥ 渲染
     res.catalog_pages = render.catalog_pdf(res.catalog_pdf, catalog)
     render.evidence_pdf(res.evidence_pdf, res.plan, catalog)
     from pypdf import PdfReader
