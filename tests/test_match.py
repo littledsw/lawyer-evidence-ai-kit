@@ -23,7 +23,8 @@ def _one(cat, fname, text_index=None):
 def test_leading_number_wins():
     cat = _cat("中国石化加油IC卡台账对账单", "停车缴费截图")
     assert _one(cat, "4_停车缴费.jpg") == ("matched", 2)
-    assert _one(cat, "02 社保缴费.pdf") == ("matched", 2)
+    cat2 = _cat("银行工资流水", "社保缴费记录")
+    assert _one(cat2, "02 社保缴费.pdf") == ("matched", 2)
 
 
 def test_unique_word_matches_without_number():
@@ -73,3 +74,37 @@ def test_missing_row_is_reported():
     decisions = match.match(cat, [_p("流水_1.jpg")])
     _, notes = match.apply(cat, decisions)
     assert any("没有任何文件匹配上" in n for n in notes)
+
+
+# ---- 真实案例（崔海涛案）回归：字面重合但类型不同，绝不能张冠李戴 ----
+
+def _real_cat():
+    return _cat("银行工资流水", "社保缴费记录", "个税记录",
+                "中国石化加油IC卡台账对账单", "停车缴费截图")
+
+
+def test_bank_statement_named_with_taizhang_goes_to_bank_not_oil():
+    """真实错例：银行给的「查询账户明细（客户台账）」带「台账」二字，但不是加油台账。"""
+    assert _one(_real_cat(), "查询账户明细（客户台账）.pdf") == ("matched", 1)
+
+
+def test_oil_ledger_still_matches_oil():
+    assert _one(_real_cat(), "中国石化IC卡台账对账单.pdf") == ("matched", 4)
+
+
+def test_social_security_record_matches():
+    assert _one(_real_cat(), "北京社保个人权益记录.pdf") == ("matched", 2)
+
+
+def test_award_not_in_catalog_is_flagged_as_unlisted():
+    cat = _real_cat()
+    decisions = match.match(cat, [_p("丰台区劳动仲裁裁决书.pdf")])
+    assert decisions[0].status == "unmatched"
+    _, notes = match.apply(cat, decisions)
+    assert any("目录里没有对应的一项" in n for n in notes)
+
+
+def test_system_junk_is_ignored_silently():
+    cat = _real_cat()
+    decisions = match.match(cat, [_p(".DS_Store"), _p("._流水.pdf")])
+    assert decisions == []

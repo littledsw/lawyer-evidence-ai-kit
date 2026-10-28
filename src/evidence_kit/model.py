@@ -27,6 +27,7 @@ class Unit:
     slice_y1_px: int = 0         # 切片结束行（不含）
     full_height_px: float = 0    # 源图总高（切片定位用）
     origin_name: str = ""        # 原始文件名（HEIC 转码后仍显示原名）
+    native_dpi: float = 0.0      # 扫描件 PDF：页内位图本身的分辨率（矢量页为 0）
 
     @property
     def label(self) -> str:

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import layout as L
+from .match import is_junk
 from .model import Unit, natural_key
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".heic", ".heif", ".tif", ".tiff", ".bmp", ".gif"}
@@ -41,7 +42,8 @@ def discover(spec, base: Path) -> list[Path]:
         if any(ch in str(it) for ch in "*?["):
             out.extend(Path(m) for m in sorted(glob.glob(str(p)), key=natural_key))
         elif p.is_dir():
-            out.extend(sorted((c for c in p.iterdir() if c.is_file()), key=natural_key))
+            out.extend(sorted((c for c in p.iterdir()
+                               if c.is_file() and not is_junk(c.name)), key=natural_key))
         elif p.is_file():
             out.append(p)
         else:
@@ -108,6 +110,30 @@ def _slice_units(path: Path, w: int, h: int) -> list[Unit]:
     return units
 
 
+def page_native_dpi(page) -> float:
+    """扫描件 PDF 的「原生分辨率」：页内最大位图的像素宽 / 页面英寸宽。矢量页返回 0。"""
+    try:
+        res = page.get("/Resources") or {}
+        xo = res.get("/XObject") or {}
+    except Exception:                                             # noqa: BLE001
+        return 0.0
+    pw = float(page.mediabox.width) / 72.0
+    ph = float(page.mediabox.height) / 72.0
+    best = 0.0
+    for k in xo:
+        try:
+            o = xo[k].get_object()
+            if o.get("/Subtype") != "/Image":
+                continue
+            iw = float(o.get("/Width") or 0)
+            ih = float(o.get("/Height") or 0)
+        except Exception:                                        # noqa: BLE001
+            continue
+        if iw and ih and pw and ph:
+            best = max(best, iw / pw, ih / ph)
+    return best
+
+
 def probe(paths: list[Path]) -> ProbeResult:
     res = ProbeResult()
     for p in paths:
@@ -119,7 +145,8 @@ def probe(paths: list[Path]) -> ProbeResult:
                 for i, pg in enumerate(r.pages):
                     mb = pg.mediabox
                     res.units.append(Unit(path=p, kind="pdf", page=i,
-                                          width_px=float(mb.width), height_px=float(mb.height)))
+                                          width_px=float(mb.width), height_px=float(mb.height),
+                                          native_dpi=page_native_dpi(pg)))
                 if not r.pages:
                     res.warnings.append(f"{p.name}：PDF 无页面")
             except Exception as e:                                   # noqa: BLE001

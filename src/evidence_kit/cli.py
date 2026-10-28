@@ -31,6 +31,18 @@ def _build(a: argparse.Namespace) -> int:
     return 0
 
 
+def _parse(a: argparse.Namespace) -> int:
+    from pathlib import Path as _P
+    from .docx_catalog import read_catalog_docx
+    cat = read_catalog_docx(_P(a.docx))
+    dump_yaml(cat, _P(a.out))
+    print(f"读到 {len(cat.groups)} 组 / {sum(len(g.rows) for g in cat.groups)} 行 → {a.out}")
+    for g in cat.groups:
+        print(f"  证据{g.no_label:>6}  {' / '.join(r.name for r in g.rows)}"
+              f"  证明目的 {len(g.proves)} 字")
+    return 0
+
+
 def _match(a: argparse.Namespace) -> int:
     from pathlib import Path as _P
     from . import match as m
@@ -77,6 +89,11 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--allow-low-dpi", action="store_true", help="允许 <100 DPI 的材料出册（会糊）")
     b.add_argument("--no-flat", action="store_true", help="不做平铺自动归位（材料已按子目录分好时用）")
     b.set_defaults(func=_build)
+
+    pz = sub.add_parser("parse", help="读 Word 版《证据目录》→ yaml 草稿（序号/名称/证明目的照抄）")
+    pz.add_argument("--docx", required=True)
+    pz.add_argument("--out", required=True)
+    pz.set_defaults(func=_parse)
 
     m = sub.add_parser("match", help="预览：平铺材料会被归到哪一项证据（不排版，只出对照）")
     m.add_argument("--catalog", required=True)

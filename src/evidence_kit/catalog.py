@@ -90,5 +90,6 @@ def dump_yaml(catalog: Catalog, path: Path) -> None:
             for g in catalog.groups
         ],
     }
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False,
                                          default_flow_style=False, width=120), encoding="utf-8")

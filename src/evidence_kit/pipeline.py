@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import layout as L
 from . import match, render, sources
+from .match import is_junk
 from .catalog import load_catalog
 from .model import Catalog, natural_key
 
@@ -36,10 +37,14 @@ def _flat_match(catalog: Catalog, materials: Path, res: "BuildResult") -> list[s
     """平铺目录里的散文件 → 归入空着的序号行。歧义与零分进待确认清单，不猜。"""
     if not materials.is_dir():
         return []
-    loose = sorted((f for f in materials.iterdir() if f.is_file()), key=natural_key)
-    if not loose:
-        return []
+    assigned = {f.resolve() for g in catalog.groups for r in g.rows
+                for f in sources.discover(r.files, materials)}
+    loose = sorted((f for f in materials.iterdir()
+                    if f.is_file() and not is_junk(f.name) and f.resolve() not in assigned),
+                   key=natural_key)
     eligible = {id(r) for g in catalog.groups for r in g.rows if not r.files}
+    if not loose or not eligible:
+        return []
     decisions = match.match(catalog, loose)
     n, notes = match.apply(catalog, decisions, eligible=eligible)
     res.warnings.append(f"平铺材料：{len(loose)} 个文件，自动归位 {n} 个")
@@ -89,10 +94,13 @@ def build(catalog_path: Path | None, materials: Path, out_dir: Path,
     # ③ 分辨率硬检查（会不会糊）
     for g in catalog.groups:
         for u in g.units:
-            if u.kind != "image":
-                continue
-            idx = 0
-            dpi = sources.effective_dpi(u, _cell_w(n_per), L.CONTENT_H)
+            if u.kind == "pdf":
+                if not u.native_dpi:
+                    continue                      # 矢量页，缩放不损失
+                s = min(_cell_w(n_per) / u.width_px, L.CONTENT_H / u.height_px)
+                dpi = u.native_dpi * s
+            else:
+                dpi = sources.effective_dpi(u, _cell_w(n_per), L.CONTENT_H)
             if dpi < DPI_FLOOR and not allow_low_dpi:
                 res.errors.append(
                     f"证据{g.no_label} {u.label}：印到纸上仅 {dpi:.0f} DPI（<{DPI_FLOOR:.0f}），"
@@ -173,7 +181,7 @@ def _write_report(res: BuildResult) -> None:
              "## 页码对照（目录里的页数 = 此处实测）", "",
              "| 序号 | 证据名称 | 页数 | 材料 |", "| --- | --- | --- | --- |"]
     for g in cat.groups:
-        files = "、".join(u.label for u in g.units) or "—"
+        files = _files_compact(g.units) or "—"
         lines.append(f"| {g.no_label} | {' / '.join(r.name for r in g.rows)} | {g.pages_label} | {files} |")
     if res.review:
         lines += ["", "## 需人工确认（机器未替你做的实体判断）", ""] + [f"- {x}" for x in res.review]
@@ -182,6 +190,24 @@ def _write_report(res: BuildResult) -> None:
     if res.errors:
         lines += ["", "## 阻断项", ""] + [f"- {x}" for x in res.errors]
     res.report_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _files_compact(units) -> str:
+    """把同一份 PDF 的连续页并成「xx.pdf（p1–p11）」，别把 47 行堆在表格里。"""
+    out, i = [], 0
+    while i < len(units):
+        u = units[i]
+        j = i
+        while (j + 1 < len(units) and units[j + 1].path == u.path
+               and units[j + 1].page == units[j].page + 1
+               and units[j + 1].slice_index == 0 and units[j].slice_count == 1):
+            j += 1
+        if j > i:
+            out.append(f"{u.label.split('（')[0]}（p{u.page + 1}–p{units[j].page + 1}）")
+        else:
+            out.append(u.label)
+        i = j + 1
+    return "、".join(out)
 
 
 def _unit_info(u) -> dict:

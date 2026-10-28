@@ -16,10 +16,18 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .lexicon import concepts_of, label_of
 from .model import Catalog, Row, natural_key
 
 _PREFIX = re.compile(r"^\s*(?:第)?0*(\d{1,3})\s*[._\-、\s]")
 _CJK = re.compile(r"[\u4e00-\u9fff]")
+JUNK = {".ds_store", "thumbs.db", ".gitkeep", "desktop.ini"}
+
+
+def is_junk(name: str) -> bool:
+    """系统垃圾文件：不该出现在证据册里，也不该出现在「认不出」清单里。"""
+    n = name.lower()
+    return n in JUNK or n.startswith("._") or n.startswith("~$") or n.endswith(".tmp")
 
 
 def _clean(s: str) -> str:
@@ -93,12 +101,24 @@ def match(catalog: Catalog, files: list[Path],
 
     decisions: list[Decision] = []
     for p in files:
+        if is_junk(p.name):
+            continue
         cands: list[Candidate] = []
         stem = p.stem
         no = leading_no(p.name)
+        f_con = concepts_of(p.stem)
         for gi, r in rows:
+            r_con = concepts_of(r.name)
+            # 类型冲突否决：材料类型与这一项的对应物类型完全不同 → 直接不是候选。
+            # 真实案例：银行「查询账户明细（客户台账）」与「加油IC卡台账」字面都有「台账」。
+            if f_con and r_con and not (f_con & r_con):
+                continue
             score = 0.0
             why: list[str] = []
+            shared = f_con & r_con
+            if shared:
+                score += 22.0 * len(shared)
+                why.append("类型 " + "、".join(label_of(c) for c in sorted(shared)))
             if no is not None and no == r.no:
                 score += 50
                 why.append(f"文件名序号 {no} = 目录序号 {r.no}")
@@ -144,7 +164,12 @@ def apply(catalog: Catalog, decisions: list[Decision],
             notes.append(f"{d.path.name}：只弱匹配到证据{b.row.no}（{b.score:.0f} 分："
                          f"{'；'.join(b.reasons)}），未自动归入")
         else:
-            notes.append(f"{d.path.name}：认不出属于哪项证据，未自动归入")
+            con = concepts_of(d.path.stem)
+            if con:
+                notes.append(f"{d.path.name}：像「{'、'.join(label_of(c) for c in sorted(con))}」，"
+                             f"但目录里没有对应的一项 —— 是漏列？还是本案不需要（如裁决书）？")
+            else:
+                notes.append(f"{d.path.name}：认不出属于哪项证据，未自动归入")
     for g in catalog.groups:
         for r in g.rows:
             got = sorted(by_row.get(id(r), []), key=natural_key)
