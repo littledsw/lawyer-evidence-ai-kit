@@ -1,0 +1,16 @@
+# 依赖与虚拟环境
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# 当事人材料与产物绝不进 git
+examples/demo/materials/
+outputs/
+out/
+案件/
+*.heic
+
+# macOS
+.DS_Store
